@@ -1,13 +1,14 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { submitAllAnswers } from "../api/api";
 
 export default function QuizPage() {
   const navigate = useNavigate();
-  const session = JSON.parse(localStorage.getItem("session"));
-  const user = JSON.parse(localStorage.getItem("user"));
-
-  const questions = session.questions;
+  
+  // 1. SAFE LOCAL STORAGE ACCESS
+  const session = JSON.parse(localStorage.getItem("session") || "{}");
+  const user = JSON.parse(localStorage.getItem("user") || "{}");
+  const questions = session.questions || [];
 
   const [current, setCurrent] = useState(0);
   const [answers, setAnswers] = useState([]);
@@ -15,18 +16,51 @@ export default function QuizPage() {
 
   const [optionLocked, setOptionLocked] = useState(false);
   const [selectedOption, setSelectedOption] = useState(null);
+  
+  // State for Waiting Room
   const [waiting, setWaiting] = useState(false);
-  const [status, setStatus] = useState("");
 
-  // When user selects an option
+  // ---------------------------------------------
+  // 2. ROBUST POLLING EFFECT
+  // ---------------------------------------------
+  useEffect(() => {
+    if (!waiting) return; // Only run if waiting
+
+    const interval = setInterval(async () => {
+      try {
+        const body = {
+          sessionId: session.sessionId,
+          userId: user._id,
+          answers, // Uses current answers state
+        };
+
+        const res = await submitAllAnswers(body);
+
+        if (res.data.message === "ready-for-winner") {
+          clearInterval(interval);
+          localStorage.setItem("resultSessionId", res.data.sessionId);
+          navigate("/result");
+        }
+      } catch (err) {
+        console.error("Polling Error:", err);
+      }
+    }, 2000); // Poll every 2 seconds
+
+    // CLEANUP: If user leaves page, stop polling
+    return () => clearInterval(interval);
+  }, [waiting, navigate, session.sessionId, user._id, answers]);
+
+
+  // ---------------------------------------------
+  // GAME LOGIC
+  // ---------------------------------------------
   const handleOptionClick = (selectedOptionIndex) => {
-    if (optionLocked) return; // Prevent double click
+    if (optionLocked) return;
 
     setOptionLocked(true);
     setSelectedOption(selectedOptionIndex);
 
     const timeTaken = Date.now() - startTime;
-
     const answer = {
       questionId: questions[current].id,
       selectedOption: selectedOptionIndex,
@@ -35,7 +69,6 @@ export default function QuizPage() {
 
     setAnswers((prev) => [...prev, answer]);
 
-    // Move forward
     if (current < 9) {
       setTimeout(() => {
         setCurrent(current + 1);
@@ -46,48 +79,23 @@ export default function QuizPage() {
     }
   };
 
-  // SUBMIT ALL ANSWERS
   const handleSubmit = async () => {
-    const body = {
-      sessionId: session.sessionId,
-      userId: user._id,
-      answers,
-    };
-
-    const res = await submitAllAnswers(body);
-
-    if (res.data.message === "waiting-for-opponent") {
-      setWaiting(true);
-      setStatus("Waiting for your opponent to finish...");
-
-      const poll = setInterval(async () => {
-        const check = await submitAllAnswers(body);
-
-        if (check.data.message === "ready-for-winner") {
-          clearInterval(poll);
-          localStorage.setItem("resultSessionId", check.data.sessionId);
-          navigate("/result");
-        }
-      }, 1000);
-
-      return;
-    }
-
-    // Both finished
-    if (res.data.message === "ready-for-winner") {
-      localStorage.setItem("resultSessionId", res.data.sessionId);
-      navigate("/result");
-    }
+    setWaiting(true); // This triggers the useEffect above
   };
 
-  // WAITING SCREEN
+  // ---------------------------------------------
+  // RENDER
+  // ---------------------------------------------
+  if (!session.questions) return <div>Error: No Session Found</div>;
+
   if (waiting) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-purple-900 to-black text-white">
         <div className="bg-gray-900 p-10 rounded-2xl shadow-2xl max-w-md w-full text-center border border-gray-700">
           <h2 className="text-2xl font-bold mb-4 animate-pulse">
-            {status}
+            Waiting for opponent to finish...
           </h2>
+          <p className="text-gray-400 text-sm">Do not refresh the page.</p>
         </div>
       </div>
     );
@@ -96,18 +104,15 @@ export default function QuizPage() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-purple-900 to-black text-white p-4">
       <div className="w-full max-w-3xl bg-gray-900 rounded-2xl p-10 shadow-2xl border border-gray-700">
-
-        {/* Question Header */}
+        
         <h2 className="text-3xl font-bold text-center mb-6 tracking-wide">
           Question {current + 1}/10
         </h2>
 
-        {/* Question Text */}
         <p className="mb-8 text-xl text-gray-200 text-center leading-relaxed">
           {questions[current].question}
         </p>
 
-        {/* Options */}
         <div className="space-y-4">
           {questions[current].options.map((opt, i) => (
             <button
@@ -128,15 +133,14 @@ export default function QuizPage() {
           ))}
         </div>
 
-        {/* Submit button */}
         {current === 9 && (
           <button
             onClick={handleSubmit}
-            disabled={answers.length !== 10}
+            disabled={answers.length !== 10 || waiting}
             className="mt-8 py-4 w-full bg-blue-600 hover:bg-blue-500 rounded-xl text-xl font-semibold cursor-pointer 
                        disabled:bg-gray-600 disabled:cursor-not-allowed transition-all duration-300"
           >
-            Submit Quiz
+            {waiting ? "Submitting..." : "Submit Quiz"}
           </button>
         )}
 
